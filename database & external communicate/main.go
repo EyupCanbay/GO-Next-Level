@@ -2,6 +2,8 @@ package main
 
 import (
 	"database/sql"
+	"database_external/brokers"
+	cache "database_external/cahce"
 	"database_external/entity"
 	"database_external/repository"
 	"encoding/json"
@@ -34,6 +36,8 @@ func main() {
 	}
 
 	cityRepo := repository.NewRepo(db)
+	rabbitmq := brokers.NewRabbitMQ()
+	redisCache := cache.NewRedisCahce()
 
 	http.HandleFunc("/city", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -45,8 +49,29 @@ func main() {
 				json.NewEncoder(w).Encode(city)
 				return
 			}
+
+			cityCache := redisCache.Get()
+			if cityCache != nil {
+				fmt.Println("city cachede var")
+				w.Write(cityCache)
+				return
+			}
+
+			fmt.Println("city cachede yok")
+
 			cityList := cityRepo.List()
-			json.NewEncoder(w).Encode(cityList)
+			cityBytes, err := json.Marshal(cityList)
+			if err != nil {
+				fmt.Println(err)
+			}
+
+			go func(data []byte) {
+				fmt.Println("city cacheleniyor")
+				redisCache.Put(data)
+			}(cityBytes)
+
+			w.Write(cityBytes)
+
 		} else if r.Method == http.MethodPost {
 			var city entity.City
 
@@ -63,6 +88,7 @@ func main() {
 			}
 
 			cityRepo.Insert(city)
+			rabbitmq.Publish([]byte("city created with name " + city.Name))
 			w.WriteHeader(http.StatusCreated)
 		} else {
 			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
